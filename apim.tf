@@ -22,6 +22,14 @@ resource "azurerm_api_management" "main" {
   sku_name            = var.apim_sku
 
   tags = var.tags
+
+  lifecycle {
+    # O APIM está no state por import. Sem esta trava, um `terraform destroy`
+    # para economizar custo apagaria o serviço — e recriar um Developer SKU
+    # leva ~40 minutos, tempo que não temos. Para desligar e economizar, use
+    # scripts/stop-cluster.sh (para o AKS), que é onde está o custo variável.
+    prevent_destroy = true
+  }
 }
 
 # ---------------------------------------------------------------------------
