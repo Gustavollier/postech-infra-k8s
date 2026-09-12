@@ -19,6 +19,19 @@
       <value>@(context.Variables.GetValueOrDefault&lt;string&gt;("correlationId", ""))</value>
     </set-header>
 
+    <!-- A Function serve o POST em /api/auth, mas a operação do gateway mora na
+         raiz desta API (/auth) com url_template "/". Sem reescrita, o caminho
+         encaminhado ao backend vira /api/ e o host de Functions devolve 404 com
+         corpo vazio — nenhuma função casa com aquela rota.
+
+         O /health não precisa disso: url_template "/health" já cai em
+         /api/health, que é onde a Function o expõe. -->
+    <choose>
+      <when condition="@(context.Operation.Id == &quot;auth-cpf&quot;)">
+        <rewrite-uri template="/auth" />
+      </when>
+    </choose>
+
     <!-- Bem mais restritivo que a API principal: 10 tentativas por minuto por IP. -->
     <rate-limit-by-key calls="10"
                        renewal-period="60"
