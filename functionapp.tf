@@ -82,6 +82,20 @@ resource "azurerm_container_app_environment" "main" {
   tags = var.tags
 }
 
+# O app ficou no Azure em estado Failed depois que a tentativa anterior expirou
+# sem conseguir puxar a imagem, mas nunca entrou no state — o apply seguinte
+# parava com "already exists - to be managed via Terraform this resource needs
+# to be imported into the State".
+#
+# O import traz o recurso orfao, e o update seguinte aplica a configuracao certa
+# (identidade atribuida pelo usuario e registry apontando para ela), o que cria
+# uma revisao nova — desta vez com permissao de pull. Uma vez no state o bloco
+# vira no-op e pode ser removido.
+import {
+  to = azurerm_container_app.auth
+  id = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/${var.resource_group_name}/providers/Microsoft.App/containerApps/${var.function_app_name}"
+}
+
 resource "azurerm_container_app" "auth" {
   name                         = var.function_app_name
   resource_group_name          = data.azurerm_resource_group.main.name
