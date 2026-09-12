@@ -74,10 +74,10 @@ resource "datadog_dashboard" "postechallenge" {
             aggregation = "count"
           }
 
-          search_query = "service:postechallenge-api @evento:OrdemServicoCriada"
+          search_query = "service:postechallenge-api @State.evento:OrdemServicoCriada"
 
           group_by {
-            facet = "@status"
+            facet = "@State.status"
             limit = 10
 
             sort_query {
@@ -103,18 +103,18 @@ resource "datadog_dashboard" "postechallenge" {
 
           compute_query {
             aggregation = "avg"
-            facet       = "@duracao_ms"
+            facet       = "@State.duracao_ms"
           }
 
-          search_query = "service:postechallenge-api @evento:TransicaoStatusOrdemServico"
+          search_query = "service:postechallenge-api @State.evento:TransicaoStatusOrdemServico"
 
           group_by {
-            facet = "@from_status"
+            facet = "@State.from_status"
             limit = 10
 
             sort_query {
               aggregation = "avg"
-              facet       = "@duracao_ms"
+              facet       = "@State.duracao_ms"
               order       = "desc"
             }
           }
@@ -141,7 +141,7 @@ resource "datadog_dashboard" "postechallenge" {
           search_query = "service:postechallenge-api status:error"
 
           group_by {
-            facet = "@evento"
+            facet = "@State.evento"
             limit = 10
 
             sort_query {
@@ -231,7 +231,7 @@ resource "datadog_monitor" "falha_processamento_os" {
     @${var.datadog_alert_email}
   EOT
 
-  query = "logs(\"service:postechallenge-api status:error @evento:FalhaProcessamentoOrdemServico\").index(\"*\").rollup(\"count\").last(\"5m\") > 3"
+  query = "logs(\"service:postechallenge-api status:error @State.evento:FalhaProcessamentoOrdemServico\").index(\"*\").rollup(\"count\").last(\"5m\") > 3"
 
   monitor_thresholds {
     critical = 3
