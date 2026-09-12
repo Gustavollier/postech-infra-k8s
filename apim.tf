@@ -92,7 +92,9 @@ resource "azurerm_api_management_api" "auth" {
   protocols           = ["https"]
   path                = "auth"
 
-  service_url = "https://${var.function_app_name}.azurewebsites.net/api"
+  # A Function roda em Container Apps, não em Function App — ver functionapp.tf
+  # para o motivo (quota zero de App Service nesta subscription).
+  service_url = "https://${azurerm_container_app.auth.ingress[0].fqdn}/api"
 }
 
 resource "azurerm_api_management_api_operation" "auth_post" {

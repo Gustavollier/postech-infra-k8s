@@ -53,8 +53,15 @@ resource "azurerm_kubernetes_cluster" "main" {
     auto_scaling_enabled = false
 
     upgrade_settings {
-      # Com a quota no teto, um surge de 33% não teria onde alocar o nó extra.
-      max_surge = "0"
+      # O AKS recusa max_surge = 0 ("maxSurge and maxUnavailable cannot both be 0")
+      # e o provider azurerm não expõe max_unavailable, que seria o ajuste correto
+      # para um cluster no teto da quota.
+      #
+      # Consequência assumida: um upgrade de versão do Kubernetes precisaria de
+      # 1 nó extra (2 vCPU) que a quota de 4 vCPU não permite, e falharia. Não é
+      # um problema para esta entrega, que não faz upgrade de cluster; para
+      # contornar seria preciso reduzir para 1 nó antes de atualizar.
+      max_surge = "1"
     }
   }
 
