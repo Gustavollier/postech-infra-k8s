@@ -12,15 +12,19 @@
   O mesmo validate-jwt aceita tanto o token de funcionário (emitido pela API)
   quanto o de cliente (emitido pela Function): ambos são assinados com o mesmo
   segredo HMAC e carregam o mesmo issuer/audience.
+
+  NOTA DE SINTAXE: expressões C# dentro de atributos XML precisam de &quot;
+  para as aspas internas. Usar aspas duplas cruas encerra o atributo e o APIM
+  rejeita a política com "is an unexpected token. Expecting white space."
 -->
 <policies>
   <inbound>
     <base />
 
     <!-- Correlação: reaproveita o ID recebido ou gera um novo, e propaga para o backend. -->
-    <set-variable name="correlationId" value="@(context.Request.Headers.GetValueOrDefault("X-Correlation-ID", Guid.NewGuid().ToString()))" />
+    <set-variable name="correlationId" value="@(context.Request.Headers.GetValueOrDefault(&quot;X-Correlation-ID&quot;, Guid.NewGuid().ToString()))" />
     <set-header name="X-Correlation-ID" exists-action="override">
-      <value>@((string)context.Variables["correlationId"])</value>
+      <value>@(context.Variables.GetValueOrDefault&lt;string&gt;("correlationId", ""))</value>
     </set-header>
 
     <!-- Proteção contra abuso, por IP de origem. -->
@@ -46,30 +50,30 @@
     </cors>
 
     <choose>
-      <!-- Rotas públicas: seguem sem validação de token. -->
-      <when condition="@(
-            context.Request.Url.Path.ToLower().Contains("/autenticacao/login")
-         || context.Request.Url.Path.ToLower().Contains("/health")
-      )">
-        <!-- sem validate-jwt -->
-      </when>
-      <otherwise>
+      <!-- Rotas públicas seguem sem validação de token. A condição é negada
+           aqui para que o bloco protegido fique no <when>, evitando um <when>
+           vazio, que o APIM tambem rejeita. -->
+      <when condition="@(!context.Request.Url.Path.ToLower().Contains(&quot;/autenticacao/login&quot;) &amp;&amp; !context.Request.Url.Path.ToLower().Contains(&quot;/health&quot;))">
         <validate-jwt header-name="Authorization"
                       failed-validation-httpcode="401"
                       failed-validation-error-message="Token inválido ou ausente."
                       require-expiration-time="true"
                       require-signed-tokens="true">
+          <!-- A ordem dos filhos é fixa no schema do APIM:
+               issuer-signing-keys, decryption-keys, audiences, issuers,
+               required-claims. Inverter audiences e issuers faz o APIM
+               rejeitar com "invalid child element". -->
           <issuer-signing-keys>
             <key>{{jwt-signing-key}}</key>
           </issuer-signing-keys>
-          <issuers>
-            <issuer>PosTechChallenge</issuer>
-          </issuers>
           <audiences>
             <audience>PosTechChallenge-API</audience>
           </audiences>
+          <issuers>
+            <issuer>PosTechChallenge</issuer>
+          </issuers>
         </validate-jwt>
-      </otherwise>
+      </when>
     </choose>
   </inbound>
 
@@ -79,16 +83,16 @@
 
   <outbound>
     <base />
-    <!-- Devolve o ID de correlação para o cliente conseguir citá-lo em um suporte. -->
+    <!-- Devolve o ID de correlação para o cliente conseguir citá-lo num suporte. -->
     <set-header name="X-Correlation-ID" exists-action="override">
-      <value>@((string)context.Variables["correlationId"])</value>
+      <value>@(context.Variables.GetValueOrDefault&lt;string&gt;("correlationId", ""))</value>
     </set-header>
   </outbound>
 
   <on-error>
     <base />
     <set-header name="X-Correlation-ID" exists-action="override">
-      <value>@((string)context.Variables["correlationId"])</value>
+      <value>@(context.Variables.GetValueOrDefault&lt;string&gt;("correlationId", ""))</value>
     </set-header>
   </on-error>
 </policies>

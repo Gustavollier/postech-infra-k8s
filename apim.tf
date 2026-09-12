@@ -58,6 +58,11 @@ resource "azurerm_api_management_api" "app" {
   display_name        = "PosTechChallenge — Oficina Mecânica API"
   protocols           = ["https"]
 
+  # A autenticação é por JWT (emitido pela Auth Function ou pelo login de
+  # funcionário), não por chave de subscription do APIM. Com o padrão true,
+  # toda chamada exigiria também um Ocp-Apim-Subscription-Key.
+  subscription_required = false
+
   # path vazio deixa as rotas como https://<gateway>/api/v1/... , iguais às do spec.
   path = ""
 
@@ -67,6 +72,19 @@ resource "azurerm_api_management_api" "app" {
     content_format = "openapi+json"
     content_value  = file("${path.module}/openapi/postechallenge.json")
   }
+}
+
+# A política já existe no APIM: foi aplicada à mão durante a depuração da
+# sintaxe, então o create falhava com "already exists - to be managed via
+# Terraform this resource needs to be imported into the State". O import a traz
+# para o state; uma vez importada, o bloco vira no-op.
+#
+# O ID é montado à mão em vez de reaproveitar azurerm_api_management_api.app.id
+# porque aquele atributo carrega o sufixo `;rev=1`, que não faz parte do ID que
+# o provider usa para a política.
+import {
+  to = azurerm_api_management_api_policy.app
+  id = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/${var.resource_group_name}/providers/Microsoft.ApiManagement/service/${var.apim_name}/apis/${azurerm_api_management_api.app.name}"
 }
 
 resource "azurerm_api_management_api_policy" "app" {
@@ -79,18 +97,64 @@ resource "azurerm_api_management_api_policy" "app" {
   depends_on = [azurerm_api_management_named_value.jwt_signing_key]
 }
 
+# O OpenAPI importado é o da Fase 2 e não contém os endpoints de health, que
+# foram adicionados agora. Declarados aqui para o synthetics do Datadog e o
+# smoke test da pipeline conseguirem chamá-los através do gateway.
+#
+# Já existem no APIM (criados durante a depuração), por isso o import.
+import {
+  to = azurerm_api_management_api_operation.health
+  id = "${azurerm_api_management_api.app.id}/operations/health"
+}
+
+resource "azurerm_api_management_api_operation" "health" {
+  operation_id        = "health"
+  api_name            = azurerm_api_management_api.app.name
+  api_management_name = azurerm_api_management.main.name
+  resource_group_name = data.azurerm_resource_group.main.name
+  display_name        = "Health check (liveness)"
+  method              = "GET"
+  url_template        = "/health"
+
+  response {
+    status_code = 200
+    description = "Saudavel"
+  }
+}
+
+import {
+  to = azurerm_api_management_api_operation.health_ready
+  id = "${azurerm_api_management_api.app.id}/operations/health-ready"
+}
+
+resource "azurerm_api_management_api_operation" "health_ready" {
+  operation_id        = "health-ready"
+  api_name            = azurerm_api_management_api.app.name
+  api_management_name = azurerm_api_management.main.name
+  resource_group_name = data.azurerm_resource_group.main.name
+  display_name        = "Health check (readiness)"
+  method              = "GET"
+  url_template        = "/health/ready"
+
+  response {
+    status_code = 200
+    description = "Saudavel"
+  }
+}
+
 # ---------------------------------------------------------------------------
 # API de autenticação — backend é a Azure Function
 # ---------------------------------------------------------------------------
 
 resource "azurerm_api_management_api" "auth" {
-  name                = "postechallenge-auth"
-  resource_group_name = data.azurerm_resource_group.main.name
-  api_management_name = azurerm_api_management.main.name
-  revision            = "1"
-  display_name        = "PosTechChallenge — Autenticação por CPF"
-  protocols           = ["https"]
-  path                = "auth"
+  name                  = "postechallenge-auth"
+  resource_group_name   = data.azurerm_resource_group.main.name
+  api_management_name   = azurerm_api_management.main.name
+  revision              = "1"
+  display_name          = "PosTechChallenge — Autenticação por CPF"
+  protocols             = ["https"]
+  path                  = "auth"
+  subscription_required = false
 
   # A Function roda em Container Apps, não em Function App — ver functionapp.tf
   # para o motivo (quota zero de App Service nesta subscription).

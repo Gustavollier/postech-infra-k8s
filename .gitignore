@@ -12,8 +12,12 @@
 *.tfvars.json
 !*.tfvars.example
 
-# Planos podem conter valores sensíveis.
+# Planos podem conter valores sensíveis: o arquivo de plano embute o tfstate
+# inteiro, com senha do banco, chave de assinatura do JWT e chaves da storage.
+# O padrão precisa cobrir tanto `plano.tfplan` quanto o `tfplan` sem extensão
+# que a pipeline gera com `terraform plan -out=tfplan`.
 *.tfplan
+tfplan
 crash.log
 crash.*.log
 
