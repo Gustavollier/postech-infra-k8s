@@ -74,6 +74,19 @@ resource "azurerm_api_management_api" "app" {
   }
 }
 
+# A política já existe no APIM: foi aplicada à mão durante a depuração da
+# sintaxe, então o create falhava com "already exists - to be managed via
+# Terraform this resource needs to be imported into the State". O import a traz
+# para o state; uma vez importada, o bloco vira no-op.
+#
+# O ID é montado à mão em vez de reaproveitar azurerm_api_management_api.app.id
+# porque aquele atributo carrega o sufixo `;rev=1`, que não faz parte do ID que
+# o provider usa para a política.
+import {
+  to = azurerm_api_management_api_policy.app
+  id = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/${var.resource_group_name}/providers/Microsoft.ApiManagement/service/${var.apim_name}/apis/${azurerm_api_management_api.app.name}"
+}
+
 resource "azurerm_api_management_api_policy" "app" {
   api_name            = azurerm_api_management_api.app.name
   resource_group_name = data.azurerm_resource_group.main.name

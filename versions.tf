@@ -18,6 +18,10 @@ terraform {
       source  = "DataDog/datadog"
       version = "~> 3.44"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.12"
+    }
   }
 
   backend "azurerm" {
