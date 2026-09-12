@@ -1,0 +1,94 @@
+<!--
+  Política da API da aplicação.
+
+  Regra: TODA rota exige JWT válido, exceto duas que não podem exigir:
+    - POST /api/v1/Autenticacao/login  (login do funcionário — quem chama ainda não tem token)
+    - /health                          (probe do Datadog synthetics e do AKS)
+
+  Isso inclui, de propósito, as rotas que na Fase 2 eram [AllowAnonymous]
+  (consulta pública de status de OS e resposta de orçamento). Na Fase 3 elas
+  passam a exigir o token de cliente emitido pela Auth Function a partir do CPF.
+
+  O mesmo validate-jwt aceita tanto o token de funcionário (emitido pela API)
+  quanto o de cliente (emitido pela Function): ambos são assinados com o mesmo
+  segredo HMAC e carregam o mesmo issuer/audience.
+-->
+<policies>
+  <inbound>
+    <base />
+
+    <!-- Correlação: reaproveita o ID recebido ou gera um novo, e propaga para o backend. -->
+    <set-variable name="correlationId" value="@(context.Request.Headers.GetValueOrDefault("X-Correlation-ID", Guid.NewGuid().ToString()))" />
+    <set-header name="X-Correlation-ID" exists-action="override">
+      <value>@((string)context.Variables["correlationId"])</value>
+    </set-header>
+
+    <!-- Proteção contra abuso, por IP de origem. -->
+    <rate-limit-by-key calls="120"
+                       renewal-period="60"
+                       counter-key="@(context.Request.IpAddress)" />
+
+    <cors allow-credentials="false">
+      <allowed-origins>
+        <origin>*</origin>
+      </allowed-origins>
+      <allowed-methods>
+        <method>GET</method>
+        <method>POST</method>
+        <method>PUT</method>
+        <method>PATCH</method>
+        <method>DELETE</method>
+        <method>OPTIONS</method>
+      </allowed-methods>
+      <allowed-headers>
+        <header>*</header>
+      </allowed-headers>
+    </cors>
+
+    <choose>
+      <!-- Rotas públicas: seguem sem validação de token. -->
+      <when condition="@(
+            context.Request.Url.Path.ToLower().Contains("/autenticacao/login")
+         || context.Request.Url.Path.ToLower().Contains("/health")
+      )">
+        <!-- sem validate-jwt -->
+      </when>
+      <otherwise>
+        <validate-jwt header-name="Authorization"
+                      failed-validation-httpcode="401"
+                      failed-validation-error-message="Token inválido ou ausente."
+                      require-expiration-time="true"
+                      require-signed-tokens="true">
+          <issuer-signing-keys>
+            <key>{{jwt-signing-key}}</key>
+          </issuer-signing-keys>
+          <issuers>
+            <issuer>PosTechChallenge</issuer>
+          </issuers>
+          <audiences>
+            <audience>PosTechChallenge-API</audience>
+          </audiences>
+        </validate-jwt>
+      </otherwise>
+    </choose>
+  </inbound>
+
+  <backend>
+    <base />
+  </backend>
+
+  <outbound>
+    <base />
+    <!-- Devolve o ID de correlação para o cliente conseguir citá-lo em um suporte. -->
+    <set-header name="X-Correlation-ID" exists-action="override">
+      <value>@((string)context.Variables["correlationId"])</value>
+    </set-header>
+  </outbound>
+
+  <on-error>
+    <base />
+    <set-header name="X-Correlation-ID" exists-action="override">
+      <value>@((string)context.Variables["correlationId"])</value>
+    </set-header>
+  </on-error>
+</policies>

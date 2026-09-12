@@ -1,0 +1,36 @@
+## Terraform
+# Diretório de trabalho com os binários dos providers — nunca versionar.
+**/.terraform/*
+
+# State e backups: ficam no backend remoto (Azure Storage).
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Arquivos de variáveis podem conter segredos.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Planos podem conter valores sensíveis.
+*.tfplan
+crash.log
+crash.*.log
+
+# Overrides locais.
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+.terraformrc
+terraform.rc
+
+# O lock file DEVE ser versionado — garante os mesmos providers em toda máquina.
+!.terraform.lock.hcl
+
+## OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,51 @@
+<!--
+  Política da API de autenticação (backend = Azure Function).
+
+  Esta rota é pública por definição: quem chama ainda não possui token. A proteção
+  aqui é rate limit agressivo, já que o endpoint recebe CPF e, sem limite, viraria
+  um vetor de enumeração de clientes.
+-->
+<policies>
+  <inbound>
+    <base />
+
+    <set-variable name="correlationId" value="@(context.Request.Headers.GetValueOrDefault("X-Correlation-ID", Guid.NewGuid().ToString()))" />
+    <set-header name="X-Correlation-ID" exists-action="override">
+      <value>@((string)context.Variables["correlationId"])</value>
+    </set-header>
+
+    <!-- Bem mais restritivo que a API principal: 10 tentativas por minuto por IP. -->
+    <rate-limit-by-key calls="10"
+                       renewal-period="60"
+                       counter-key="@(context.Request.IpAddress)" />
+
+    <cors allow-credentials="false">
+      <allowed-origins>
+        <origin>*</origin>
+      </allowed-origins>
+      <allowed-methods>
+        <method>POST</method>
+        <method>GET</method>
+        <method>OPTIONS</method>
+      </allowed-methods>
+      <allowed-headers>
+        <header>*</header>
+      </allowed-headers>
+    </cors>
+  </inbound>
+
+  <backend>
+    <base />
+  </backend>
+
+  <outbound>
+    <base />
+    <set-header name="X-Correlation-ID" exists-action="override">
+      <value>@((string)context.Variables["correlationId"])</value>
+    </set-header>
+  </outbound>
+
+  <on-error>
+    <base />
+  </on-error>
+</policies>
