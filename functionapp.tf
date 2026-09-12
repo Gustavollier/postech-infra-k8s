@@ -149,6 +149,14 @@ resource "azurerm_container_app" "auth" {
         value = "dotnet-isolated"
       }
 
+      # A imagem base do Functions escuta na 80, mas o valor vem do default da
+      # imagem. Declarado aqui para não depender dele: se o host subir numa
+      # porta diferente da de ingress, o ACA nunca considera a réplica pronta.
+      env {
+        name  = "ASPNETCORE_URLS"
+        value = "http://+:80"
+      }
+
       env {
         name        = "AzureWebJobsStorage"
         secret_name = "storage-connection-string"
@@ -199,19 +207,18 @@ resource "azurerm_container_app" "auth" {
         value = "postech-auth-function"
       }
 
-      # O host de Functions em container sobe em algumas dezenas de segundos, e
-      # com min_replicas = 0 toda ativação paga esse custo de novo. A folga aqui
-      # (30s + 5 falhas x 30s) evita que a réplica seja morta antes de responder
-      # e a revisão nunca ficar pronta.
-      liveness_probe {
-        transport = "HTTP"
-        port      = 80
-        path      = "/api/health"
-
-        initial_delay           = 30
-        interval_seconds        = 30
-        failure_count_threshold = 5
-      }
+      # SEM liveness probe de propósito.
+      #
+      # A revisão falhou com "Operation expired" duas vezes: uma sem o AcrPull
+      # (identidade de sistema) e outra já com o papel no lugar. Como o segundo
+      # caso descarta o problema de pull, sobra o container não ficar saudável.
+      # Uma probe HTTP que não responde faz o ACA reiniciar a réplica em loop até
+      # o provisionamento expirar — exatamente o sintoma observado.
+      #
+      # Sem probe, o ACA só exige que o container suba e aceite conexão na porta
+      # de ingress. Se a revisão vier saudável assim, o defeito está na rota de
+      # health e não na hospedagem. Vale reintroduzir a probe depois, com o
+      # caminho confirmado contra a Function rodando.
     }
   }
 
