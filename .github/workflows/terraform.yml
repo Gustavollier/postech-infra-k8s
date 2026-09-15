@@ -54,9 +54,28 @@ jobs:
       - name: Validate
         run: terraform validate -no-color
 
+      # O APIM Developer nao tem SLA: a Azure derruba o endpoint de gerenciamento
+      # durante upgrades de plataforma, e o Terraform quebra ja no refresh, com
+      # "ManagementApiRequestFailed ... inherent downtime". Nao e erro de
+      # configuracao e nao ha o que corrigir no codigo — so esperar.
+      #
+      # Cinco tentativas espacadas cobrem as janelas curtas, que sao a maioria.
+      # Se cair fora disso, o job falha de verdade e a mensagem diz o motivo.
       - name: Plan
         id: plan
-        run: terraform plan -input=false -no-color -out=tfplan
+        run: |
+          set -euo pipefail
+          for tentativa in 1 2 3 4 5; do
+            if terraform plan -input=false -no-color -out=tfplan 2>&1 | tee plano.txt; then
+              exit 0
+            fi
+            if [ "$tentativa" -lt 5 ]; then
+              echo "::warning::Tentativa $tentativa falhou. O endpoint de gerenciamento do APIM pode estar em manutencao. Nova tentativa em 60s."
+              sleep 60
+            fi
+          done
+          echo "::error::Cinco tentativas falharam. Se a mensagem cita ManagementApiRequestFailed, o APIM Developer esta indisponivel e so resta aguardar a Azure."
+          exit 1
 
       - name: Comentar o plano no PR
         if: github.event_name == 'pull_request'
@@ -65,7 +84,12 @@ jobs:
           PLANO: ${{ steps.plan.outputs.stdout }}
         with:
           script: |
-            const plano = process.env.PLANO || '';
+            // O arquivo vem do proprio passo de plan e nao depende do wrapper do
+            // setup-terraform, que captura stdout so da ultima invocacao — e o
+            // passo agora roda o plan em laco de retentativa.
+            const fs = require('fs');
+            let plano = '';
+            try { plano = fs.readFileSync('plano.txt', 'utf8'); } catch { plano = process.env.PLANO || ''; }
             const corpo = [
               '### Terraform Plan — AKS, APIM e Datadog',
               '',
@@ -122,8 +146,27 @@ jobs:
       - name: Init
         run: terraform init -input=false
 
+      # O APIM Developer nao tem SLA: a Azure derruba o endpoint de gerenciamento
+      # durante upgrades de plataforma, e o Terraform quebra ja no refresh, com
+      # "ManagementApiRequestFailed ... inherent downtime". Nao e erro de
+      # configuracao e nao ha o que corrigir no codigo — so esperar.
+      #
+      # Cinco tentativas espacadas cobrem as janelas curtas, que sao a maioria.
+      # Se cair fora disso, o job falha de verdade e a mensagem diz o motivo.
       - name: Apply
-        run: terraform apply -input=false -auto-approve
+        run: |
+          set -euo pipefail
+          for tentativa in 1 2 3 4 5; do
+            if terraform apply -input=false -auto-approve; then
+              exit 0
+            fi
+            if [ "$tentativa" -lt 5 ]; then
+              echo "::warning::Tentativa $tentativa falhou. O endpoint de gerenciamento do APIM pode estar em manutencao. Nova tentativa em 60s."
+              sleep 60
+            fi
+          done
+          echo "::error::Cinco tentativas falharam. Se a mensagem cita ManagementApiRequestFailed, o APIM Developer esta indisponivel e so resta aguardar a Azure."
+          exit 1
 
       - name: Outputs
         run: terraform output -no-color
