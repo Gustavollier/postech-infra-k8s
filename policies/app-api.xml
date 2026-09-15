@@ -21,17 +21,12 @@
   <inbound>
     <base />
 
-    <!-- Correlação: reaproveita o ID recebido ou gera um novo, e propaga para o backend. -->
-    <set-variable name="correlationId" value="@(context.Request.Headers.GetValueOrDefault(&quot;X-Correlation-ID&quot;, Guid.NewGuid().ToString()))" />
-    <set-header name="X-Correlation-ID" exists-action="override">
-      <value>@(context.Variables.GetValueOrDefault&lt;string&gt;("correlationId", ""))</value>
-    </set-header>
-
-    <!-- Proteção contra abuso, por IP de origem. -->
-    <rate-limit-by-key calls="120"
-                       renewal-period="60"
-                       counter-key="@(context.Request.IpAddress)" />
-
+    <!-- O <cors> vem ANTES do rate limit de proposito.
+         Ele e quem responde ao preflight e encerra o pipeline ali. Com o rate
+         limit na frente, cada chamada do navegador custava DUAS: o OPTIONS do
+         preflight e o metodo de verdade. Como o painel manda X-Correlation-ID
+         e Content-Type: application/json, todo POST gera preflight — o limite
+         valia pela metade sem ninguem ver. -->
     <cors allow-credentials="false">
       <allowed-origins>
         <origin>*</origin>
@@ -48,6 +43,12 @@
         <header>*</header>
       </allowed-headers>
     </cors>
+
+    <!-- Correlação: reaproveita o ID recebido ou gera um novo, e propaga para o backend. -->
+    <set-variable name="correlationId" value="@(context.Request.Headers.GetValueOrDefault(&quot;X-Correlation-ID&quot;, Guid.NewGuid().ToString()))" />
+    <set-header name="X-Correlation-ID" exists-action="override">
+      <value>@(context.Variables.GetValueOrDefault&lt;string&gt;("correlationId", ""))</value>
+    </set-header>
 
     <choose>
       <!-- Rotas públicas seguem sem validação de token. A condição é negada
@@ -75,6 +76,13 @@
         </validate-jwt>
       </when>
     </choose>
+    <!-- Protecao contra abuso, por IP de origem. O contador leva o nome da API
+         no prefixo para nao dividir balde com a politica de autenticacao. -->
+    <rate-limit-by-key calls="120"
+                       renewal-period="60"
+                       counter-key="@(&quot;app-&quot; + context.Request.IpAddress)"
+                       remaining-calls-header-name="X-RateLimit-Remaining"
+                       retry-after-header-name="Retry-After" />
   </inbound>
 
   <backend>

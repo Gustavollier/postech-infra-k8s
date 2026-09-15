@@ -14,6 +14,26 @@
   <inbound>
     <base />
 
+    <!-- O <cors> vem ANTES do rate limit de proposito.
+         Ele e quem responde ao preflight e encerra o pipeline ali. Com o rate
+         limit na frente, cada chamada do navegador custava DUAS: o OPTIONS do
+         preflight e o metodo de verdade. Como o painel manda X-Correlation-ID
+         e Content-Type: application/json, todo POST gera preflight — o limite
+         valia pela metade sem ninguem ver. -->
+    <cors allow-credentials="false">
+      <allowed-origins>
+        <origin>*</origin>
+      </allowed-origins>
+      <allowed-methods>
+        <method>POST</method>
+        <method>GET</method>
+        <method>OPTIONS</method>
+      </allowed-methods>
+      <allowed-headers>
+        <header>*</header>
+      </allowed-headers>
+    </cors>
+
     <set-variable name="correlationId" value="@(context.Request.Headers.GetValueOrDefault(&quot;X-Correlation-ID&quot;, Guid.NewGuid().ToString()))" />
     <set-header name="X-Correlation-ID" exists-action="override">
       <value>@(context.Variables.GetValueOrDefault&lt;string&gt;("correlationId", ""))</value>
@@ -33,28 +53,15 @@
     </choose>
 
     <!-- Bem mais restritivo que a API principal, que permite 120: 30 tentativas
-         por minuto por IP. Eram 10, e com o contador por IP isso estourava em
-         uso legitimo — uma pessoa testando gasta 10 chamadas rapido, e quem
-         estiver na mesma rede divide a mesma cota. 30 ainda barra enumeracao
-         de CPF, que e o ponto: varrer o espaco de CPFs a 30 por minuto e
-         inviavel, e o 429 aparece antes de chegar perto. -->
+         por minuto por IP. O contador leva o nome da API no prefixo para nao
+         dividir balde com a outra politica, que usa o mesmo IP como chave.
+         30 ainda barra enumeracao de CPF, que e o ponto: varrer o espaco de
+         CPFs a 30 por minuto e inviavel, e o 429 aparece muito antes. -->
     <rate-limit-by-key calls="30"
                        renewal-period="60"
-                       counter-key="@(context.Request.IpAddress)" />
-
-    <cors allow-credentials="false">
-      <allowed-origins>
-        <origin>*</origin>
-      </allowed-origins>
-      <allowed-methods>
-        <method>POST</method>
-        <method>GET</method>
-        <method>OPTIONS</method>
-      </allowed-methods>
-      <allowed-headers>
-        <header>*</header>
-      </allowed-headers>
-    </cors>
+                       counter-key="@(&quot;auth-&quot; + context.Request.IpAddress)"
+                       remaining-calls-header-name="X-RateLimit-Remaining"
+                       retry-after-header-name="Retry-After" />
   </inbound>
 
   <backend>
