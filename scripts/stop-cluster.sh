@@ -13,7 +13,9 @@
 #                        (~US$1,70/dia). Deletar custaria ~40 min para recriar.
 #   - Azure SQL Basic -> ~US$0,16/dia. O tier Basic não tem auto-pause
 #                        (só o serverless tem). Não compensa mexer.
-#   - Function App    -> plano Consumption: ocioso custa praticamente zero.
+#   - Auth Function   -> roda em Container Apps com min_replicas = 0. Sem
+#                        trafego nao ha replica, e sem replica nao ha custo.
+#                        Ela continua no ar e responde normalmente.
 #   - ACR Basic       -> ~US$0,17/dia, apenas armazenamento.
 #
 set -euo pipefail
@@ -42,4 +44,25 @@ az aks stop --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}"
 
 echo
 echo "Cluster parado. Os nós não consomem mais crédito."
-echo "Para religar: ./scripts/start-cluster.sh"
+echo
+echo "----------------------------------------------------------------------"
+echo "Duas coisas para fazer agora, senão o ambiente parado dá trabalho:"
+echo
+echo "1) Pause os dois Synthetic Tests no Datadog."
+echo "   Eles batem no /health a cada 5 min e mandam e-mail quando falham —"
+echo "   com o cluster parado, vão falhar para sempre."
+echo "   app.datadoghq.com -> Digital Experience -> Synthetic Tests"
+echo "   -> selecione '[PosTech] Uptime da API via APIM' e"
+echo "      '[PosTech] Uptime da Auth Function' -> Pause"
+echo "   (o proximo terraform apply volta os dois para live sozinho, porque"
+echo "    status = \"live\" esta declarado no datadog.tf — nao precisa desfazer)"
+echo
+echo "2) Nao empurre nada para main nem para develop enquanto estiver parado."
+echo "   As pipelines dos dois repositorios fazem deploy/apply contra o cluster"
+echo "   e vao falhar: o CI/CD da aplicacao nao consegue fazer rollout, e o"
+echo "   terraform nem termina o refresh, porque os recursos kubernetes_* e o"
+echo "   helm_release nao alcancam o API server. Trabalhe em branch e segure o"
+echo "   merge — ou religue o cluster antes de mergear."
+echo "----------------------------------------------------------------------"
+echo
+echo "Para religar: ./scripts/start-cluster.sh   (~5 min, confere o IP no fim)"
