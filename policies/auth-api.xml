@@ -32,8 +32,13 @@
       </when>
     </choose>
 
-    <!-- Bem mais restritivo que a API principal: 10 tentativas por minuto por IP. -->
-    <rate-limit-by-key calls="10"
+    <!-- Bem mais restritivo que a API principal, que permite 120: 30 tentativas
+         por minuto por IP. Eram 10, e com o contador por IP isso estourava em
+         uso legitimo — uma pessoa testando gasta 10 chamadas rapido, e quem
+         estiver na mesma rede divide a mesma cota. 30 ainda barra enumeracao
+         de CPF, que e o ponto: varrer o espaco de CPFs a 30 por minuto e
+         inviavel, e o 429 aparece antes de chegar perto. -->
+    <rate-limit-by-key calls="30"
                        renewal-period="60"
                        counter-key="@(context.Request.IpAddress)" />
 
