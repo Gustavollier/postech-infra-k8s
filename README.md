@@ -1,6 +1,6 @@
 # PosTech Infra — AKS, API Management e Observabilidade
 
-Terraform da plataforma do Tech Challenge Fase 3 (13SOAT): o cluster onde a aplicação roda, o gateway que protege as rotas, a hospedagem da Auth Function e toda a camada de monitoramento.
+Terraform da plataforma do Tech Challenge Fase 3 (15SOAT): o cluster onde a aplicação roda, o gateway que protege as rotas, a hospedagem da Auth Function e toda a camada de monitoramento.
 
 É o item 4 dos quatro repositórios da entrega. Os outros três entregam o código; este entrega o lugar onde eles rodam.
 
