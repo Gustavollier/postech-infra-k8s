@@ -109,4 +109,4 @@ O arquivo de plano do Terraform (`terraform plan -out=tfplan`) **embute o state 
 | [postech-infra-db](https://github.com/Gustavollier/postech-infra-db) | Azure SQL Database e Key Vault |
 | **postech-infra-k8s** | este repositório |
 
-Documentação arquitetural completa (componentes, sequência, RFCs, ADRs, ER): .[postech-app/Documents](https://github.com/Gustavollier/postech-app/tree/main/Documents).
+Documentação arquitetural completa (componentes, sequência, RFCs, ADRs, ER): [postech-app/Documents](https://github.com/Gustavollier/postech-app/tree/main/Documents).
