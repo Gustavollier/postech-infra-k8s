@@ -1,0 +1,196 @@
+name: Operação Azure (com aprovação)
+
+# Executa comandos de operação na Azure a partir do runner do GitHub, que tem
+# saída livre para management.azure.com.
+#
+# Por que existe: o ambiente de desenvolvimento automatizado tem o `az`
+# instalado mas a política de rede dele nega management.azure.com, então nenhum
+# comando de recurso funciona de lá. O runner não tem essa restrição, e o OIDC
+# já está configurado — nenhum segredo de nuvem fica versionado.
+#
+# Toda execução para e espera aprovação humana antes de tocar em qualquer
+# recurso. O portão é o Environment `azure-operacao`, e ele só funciona depois
+# de configurado:
+#
+#   Settings -> Environments -> New environment -> azure-operacao
+#   -> marque "Required reviewers" e adicione o seu usuário -> Save
+#
+# Sem isso o job roda direto, sem pedir nada.
+
+on:
+  workflow_dispatch:
+    inputs:
+      acao:
+        description: "O que fazer"
+        required: true
+        type: choice
+        options:
+          - diagnostico
+          - parar-cluster
+          - iniciar-cluster
+          - deletar-apim
+          - terraform-plan
+          - terraform-apply
+      confirmacao:
+        description: 'Digite CONFIRMO para as ações destrutivas (deletar-apim, terraform-apply)'
+        required: false
+        type: string
+
+env:
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  RESOURCE_GROUP: pos-tech-fiap
+  CLUSTER_NAME: postech-aks
+  APIM_NAME: pos-tech-fiap-apim
+  TF_VERSION: "1.9.8"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  operar:
+    name: ${{ inputs.acao }}
+    runs-on: ubuntu-latest
+
+    # É este `environment` que segura a execução esperando a aprovação.
+    environment: azure-operacao
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # As ações que destroem recurso exigem a palavra digitada à mão. Um clique
+      # errado no menu suspenso não pode apagar o APIM, que leva 40 minutos para
+      # voltar.
+      - name: Conferir a confirmação das ações destrutivas
+        if: inputs.acao == 'deletar-apim' || inputs.acao == 'terraform-apply'
+        run: |
+          if [ "${{ inputs.confirmacao }}" != "CONFIRMO" ]; then
+            echo "::error::A ação '${{ inputs.acao }}' exige o campo de confirmação preenchido com CONFIRMO."
+            exit 1
+          fi
+
+      - name: Login na Azure via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Diagnóstico da assinatura
+        if: inputs.acao == 'diagnostico'
+        run: |
+          echo "## Estado da assinatura" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          echo "--- Cluster AKS ---"
+          az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER_NAME" \
+            --query "{nome:name, estado:powerState.code, provisionamento:provisioningState, nos:agentPoolProfiles[0].count, sku:agentPoolProfiles[0].vmSize}" \
+            -o table 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || echo "cluster não encontrado" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          echo "" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "--- API Management ---" | tee -a "$GITHUB_STEP_SUMMARY"
+          az apim show -g "$RESOURCE_GROUP" -n "$APIM_NAME" \
+            --query "{nome:name, sku:sku.name, estado:provisioningState}" \
+            -o table 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || echo "APIM não existe (deletado)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          echo "" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "--- Bancos SQL ---" | tee -a "$GITHUB_STEP_SUMMARY"
+          az sql db list -g "$RESOURCE_GROUP" -s postech-sql-13soat-cus \
+            --query "[].{nome:name, tier:sku.name, estado:status}" -o table 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+          echo "" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "--- Quota de vCPU na região do cluster ---" | tee -a "$GITHUB_STEP_SUMMARY"
+          az vm list-usage --location eastus \
+            --query "[?contains(name.value, 'cores')].{recurso:localName, usado:currentValue, limite:limit}" \
+            -o table 2>&1 | head -20 | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Parar o cluster
+        if: inputs.acao == 'parar-cluster'
+        run: |
+          estado=$(az aks show -g "$RESOURCE_GROUP" -n "$CLUSTER_NAME" --query "powerState.code" -o tsv)
+          if [ "$estado" = "Stopped" ]; then
+            echo "Cluster já está parado." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          az aks stop -g "$RESOURCE_GROUP" -n "$CLUSTER_NAME"
+          echo "Cluster parado. Os nós não consomem mais crédito." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Iniciar o cluster
+        if: inputs.acao == 'iniciar-cluster'
+        run: |
+          az aks start -g "$RESOURCE_GROUP" -n "$CLUSTER_NAME"
+          az aks get-credentials -g "$RESOURCE_GROUP" -n "$CLUSTER_NAME" --overwrite-existing
+          kubectl get pods,svc,hpa -n postechallenge 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+          ip=$(kubectl get svc postechallenge-api -n postechallenge \
+               -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          url=$(az apim api show -g "$RESOURCE_GROUP" --service-name "$APIM_NAME" \
+                --api-id postechallenge-api --query "serviceUrl" -o tsv 2>/dev/null || echo "")
+
+          echo "LoadBalancer: ${ip:-indisponível}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Backend no APIM: ${url:-indisponível}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$ip" ] && [ -n "$url" ] && [ "$url" != "http://$ip" ]; then
+            echo "::warning::O IP do LoadBalancer mudou. Rode terraform-apply para reconfigurar o backend do APIM."
+          fi
+
+      - name: Deletar o APIM
+        if: inputs.acao == 'deletar-apim'
+        run: |
+          az apim delete -g "$RESOURCE_GROUP" -n "$APIM_NAME" --yes --no-wait
+          {
+            echo "APIM marcado para exclusão."
+            echo ""
+            echo "Lembre do soft-delete: a instância fica retida por 48h e o nome"
+            echo "continua reservado nesse período. Para recriar com o mesmo nome"
+            echo "antes disso, é preciso purgar:"
+            echo ""
+            echo '    az apim deletedservice purge --service-name '"$APIM_NAME"' --location eastus'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup do Terraform
+        if: inputs.acao == 'terraform-plan' || inputs.acao == 'terraform-apply'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform plan
+        if: inputs.acao == 'terraform-plan'
+        env:
+          TF_VAR_datadog_api_key: ${{ secrets.DD_API_KEY }}
+          TF_VAR_datadog_app_key: ${{ secrets.DD_APP_KEY }}
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -no-color | tee plano.txt
+          {
+            echo '## Plano'
+            echo '```hcl'
+            tail -c 60000 plano.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform apply
+        if: inputs.acao == 'terraform-apply'
+        env:
+          TF_VAR_datadog_api_key: ${{ secrets.DD_API_KEY }}
+          TF_VAR_datadog_app_key: ${{ secrets.DD_APP_KEY }}
+        run: |
+          terraform init -input=false
+          terraform apply -input=false -auto-approve -no-color | tee saida.txt
+          {
+            echo '## Apply'
+            echo '```'
+            tail -c 40000 saida.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
