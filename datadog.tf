@@ -74,7 +74,7 @@ resource "datadog_dashboard" "postechallenge" {
             aggregation = "count"
           }
 
-          search_query = "service:postechallenge-api @State.evento:OrdemServicoCriada"
+          search_query = "service:(os-service OR billing-service OR execucao-service OR identidade-service) @State.evento:OrdemServicoCriada"
 
           group_by {
             facet = "@State.status"
@@ -106,7 +106,7 @@ resource "datadog_dashboard" "postechallenge" {
             facet       = "@State.duracao_ms"
           }
 
-          search_query = "service:postechallenge-api @State.evento:TransicaoStatusOrdemServico"
+          search_query = "service:(os-service OR billing-service OR execucao-service OR identidade-service) @State.evento:TransicaoStatusOrdemServico"
 
           group_by {
             facet = "@State.from_status"
@@ -138,7 +138,7 @@ resource "datadog_dashboard" "postechallenge" {
             aggregation = "count"
           }
 
-          search_query = "service:postechallenge-api status:error"
+          search_query = "service:(os-service OR billing-service OR execucao-service OR identidade-service) status:error"
 
           group_by {
             facet = "@State.evento"
@@ -162,17 +162,17 @@ resource "datadog_dashboard" "postechallenge" {
       title = "Latência das APIs (p50 / p95 / p99)"
 
       request {
-        q            = "p50:trace.aspnet_core.request{service:postechallenge-api}"
+        q            = "p50:trace.aspnet_core.request{service IN (os-service,billing-service,execucao-service,identidade-service)}"
         display_type = "line"
       }
 
       request {
-        q            = "p95:trace.aspnet_core.request{service:postechallenge-api}"
+        q            = "p95:trace.aspnet_core.request{service IN (os-service,billing-service,execucao-service,identidade-service)}"
         display_type = "line"
       }
 
       request {
-        q            = "p99:trace.aspnet_core.request{service:postechallenge-api}"
+        q            = "p99:trace.aspnet_core.request{service IN (os-service,billing-service,execucao-service,identidade-service)}"
         display_type = "line"
       }
     }
@@ -231,7 +231,7 @@ resource "datadog_monitor" "falha_processamento_os" {
     @${var.datadog_alert_email}
   EOT
 
-  query = "logs(\"service:postechallenge-api status:error @State.evento:FalhaProcessamentoOrdemServico\").index(\"*\").rollup(\"count\").last(\"5m\") > 3"
+  query = "logs(\"service:(os-service OR billing-service OR execucao-service OR identidade-service) status:error @State.evento:FalhaProcessamentoOrdemServico\").index(\"*\").rollup(\"count\").last(\"5m\") > 3"
 
   monitor_thresholds {
     critical = 3
@@ -254,7 +254,7 @@ resource "datadog_monitor" "latencia_alta" {
     @${var.datadog_alert_email}
   EOT
 
-  query = "avg(last_10m):p95:trace.aspnet_core.request{service:postechallenge-api} > 1"
+  query = "avg(last_10m):p95:trace.aspnet_core.request{service IN (os-service,billing-service,execucao-service,identidade-service)} > 1"
 
   monitor_thresholds {
     critical = 1
@@ -274,7 +274,7 @@ resource "datadog_monitor" "taxa_erro_5xx" {
     @${var.datadog_alert_email}
   EOT
 
-  query = "logs(\"service:postechallenge-api @http.status_code:[500 TO 599]\").index(\"*\").rollup(\"count\").last(\"5m\") > 10"
+  query = "logs(\"service:(os-service OR billing-service OR execucao-service OR identidade-service) @http.status_code:[500 TO 599]\").index(\"*\").rollup(\"count\").last(\"5m\") > 10"
 
   monitor_thresholds {
     critical = 10
@@ -300,7 +300,7 @@ resource "datadog_synthetics_test" "health_api" {
 
   request_definition {
     method = "GET"
-    url    = "https://${azurerm_api_management.main.name}.azure-api.net/health"
+    url    = "https://${azurerm_api_management.main.name}.azure-api.net/os/health"
   }
 
   assertion {

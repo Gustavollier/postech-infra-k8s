@@ -4,6 +4,56 @@ Terraform da plataforma do Tech Challenge Fase 3: o cluster onde a aplicação r
 
 É o item 4 dos quatro repositórios da entrega. Os outros três entregam o código; este entrega o lugar onde eles rodam.
 
+## Fase 4: quatro microsserviços
+
+O monólito sai e entram o OS, o Billing, o Execução e o Identidade. O que muda
+aqui:
+
+| Antes (Fase 3) | Agora (Fase 4) |
+| --- | --- |
+| Uma API no APIM, com o OpenAPI do monólito | Uma API por serviço (`/os`, `/billing`, `/execucao`, `/identidade`) e a `/auth` da Function |
+| Um Service `LoadBalancer` | Um por serviço (`<serviço>-api-publico`), cada um backend da sua API |
+| Um Secret com a connection string do monólito | Um Secret por serviço, com os nomes e as chaves que o manifesto de cada um espera |
+| APIM importado do portal, com `prevent_destroy` | APIM criado pelo Terraform, e o `destroy` funciona |
+| `eastus` / `centralus` | `canadacentral`, por política da assinatura |
+
+As rotas ficam `https://<apim>.azure-api.net/<serviço>/api/v1/...`. Toda rota
+exige JWT, exceto `/health` de cada serviço, o login e a troca de senha do
+Identidade e o webhook do Mercado Pago no Billing.
+
+### O tier do APIM
+
+`var.apim_sku` escolhe entre `Developer_1` e `Consumption_0`:
+
+| | Developer_1 | Consumption_0 |
+| --- | --- | --- |
+| Custo | ~US$ 1,70/dia, cobrado por hora | por chamada, 1 milhão grátis/mês |
+| Tempo para subir | 30 a 45 min | minutos |
+| Rate limit por IP (barra enumeração de CPF) | sim | **não existe** (`rate-limit-by-key`) |
+| Logs do gateway no Azure Monitor (Datadog) | sim | **não existe** |
+
+As políticas e o diagnóstico se ajustam ao tier sozinhos. Referência:
+[políticas por tier](https://learn.microsoft.com/azure/api-management/api-management-policies#rate-limiting-and-quotas)
+e [logs de recurso](https://learn.microsoft.com/azure/api-management/api-management-howto-use-azure-monitor#resource-logs).
+
+### Antes do apply
+
+A ordem importa, porque este repositório **lê** segredos que precisam existir:
+
+1. **`postech-infra-db`**: cria o SQL, os bancos `os-db` e `identidade-db` e o
+   Key Vault, com as connection strings SQL e o segredo do JWT.
+2. **Segredos de fora da Azure, à mão, uma vez.** Quem tem as contas grava no
+   cofre, sem o valor passar por arquivo, variável ou pipeline:
+
+   | Segredo no Key Vault | De onde vem |
+   | --- | --- |
+   | `billing-mongo-connection-string` | Atlas, usuário `billing-svc` |
+   | `execucao-mongo-connection-string` | Atlas, usuário `execucao-svc` |
+   | `rabbitmq-connection-string` | CloudAMQP, AMQP URL |
+   | `mercadopago-access-token` | Mercado Pago, credencial de teste |
+
+3. **Este repositório.**
+
 ## O que este repositório provisiona
 
 | Arquivo | Recursos |

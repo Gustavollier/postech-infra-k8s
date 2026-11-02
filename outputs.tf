@@ -8,9 +8,14 @@ output "acr_login_server" {
   value       = azurerm_container_registry.main.login_server
 }
 
-output "app_load_balancer_ip" {
-  description = "IP público do Service da aplicação. É o backend do APIM."
-  value       = kubernetes_service.app.status[0].load_balancer[0].ingress[0].ip
+output "ips_dos_servicos" {
+  description = "IP público de cada microsserviço. São os backends do APIM."
+  value       = { for k, s in kubernetes_service.publico : k => s.status[0].load_balancer[0].ingress[0].ip }
+}
+
+output "rotas_no_gateway" {
+  description = "A entrada de cada microsserviço no APIM."
+  value       = { for k, a in azurerm_api_management_api.servico : k => "${azurerm_api_management.main.gateway_url}/${a.path}" }
 }
 
 output "apim_gateway_url" {

@@ -1,17 +1,58 @@
 # ---------------------------------------------------------------------------
 # API Management
 #
-# O APIM já foi provisionado manualmente no portal. Recriar um Developer SKU leva
-# ~40 minutos, então o recurso é IMPORTADO para o state em vez de recriado.
-# Os atributos abaixo espelham o recurso existente para o import não gerar diff.
+# Fase 4: o APIM é criado pelo Terraform, e não mais importado. Na Fase 3 ele
+# tinha sido feito à mão no portal, e o state o trazia por import com
+# prevent_destroy, porque recriar um Developer leva ~40 minutos. Agora a
+# assinatura é recriada do zero perto da gravação e destruída depois, então o
+# destroy tem que funcionar e não há nada a importar.
+#
+# O tier é escolhido por var.apim_sku. O Consumption é cobrado por chamada e
+# sobe em minutos, mas não tem rate-limit-by-key nem logs de recurso no Azure
+# Monitor; as políticas e o diagnóstico abaixo se ajustam a ele sozinhos.
 # ---------------------------------------------------------------------------
 
-import {
-  to = azurerm_api_management.main
-  id = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/${var.resource_group_name}/providers/Microsoft.ApiManagement/service/${var.apim_name}"
-}
-
 data "azurerm_client_config" "current" {}
+
+locals {
+  apim_consumption = startswith(var.apim_sku, "Consumption")
+
+  # Uma API por microsserviço. O caminho é o prefixo no gateway:
+  # https://<apim>.azure-api.net/os/api/v1/ordens-servico chega no OS Service
+  # como /api/v1/ordens-servico.
+  apis = {
+    os = {
+      nome     = "Ordem de Serviço"
+      publicas = ["/health"]
+    }
+    billing = {
+      nome = "Orçamento e Pagamento"
+      # Quem chama o webhook é o Mercado Pago, que não tem o nosso token. O
+      # serviço não confia na notificação: consulta o adquirente antes de agir.
+      publicas = ["/health", "/pagamentos/webhook"]
+    }
+    execucao = {
+      nome     = "Execução e Produção"
+      publicas = ["/health"]
+    }
+    identidade = {
+      nome = "Identidade"
+      # Login e troca de senha: quem chama ainda não tem token. O serviço tem
+      # bloqueio por tentativas, e a troca de senha passa pelo mesmo login.
+      publicas = ["/health", "/autenticacao/login", "/autenticacao/trocar-senha"]
+    }
+  }
+
+  # O APIM não repassa o que não casa com uma operação. Uma operação curinga
+  # por método deixa todas as rotas do serviço passarem, e o contrato de cada
+  # uma fica no Swagger do próprio serviço, que é onde ele é mantido.
+  metodos = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+
+  operacoes = {
+    for par in setproduct(keys(local.apis), local.metodos) :
+    "${par[0]}-${lower(par[1])}" => { api = par[0], metodo = par[1] }
+  }
+}
 
 resource "azurerm_api_management" "main" {
   name                = var.apim_name
@@ -22,14 +63,6 @@ resource "azurerm_api_management" "main" {
   sku_name            = var.apim_sku
 
   tags = var.tags
-
-  lifecycle {
-    # O APIM está no state por import. Sem esta trava, um `terraform destroy`
-    # para economizar custo apagaria o serviço — e recriar um Developer SKU
-    # leva ~40 minutos, tempo que não temos. Para desligar e economizar, use
-    # scripts/stop-cluster.sh (para o AKS), que é onde está o custo variável.
-    prevent_destroy = true
-  }
 }
 
 # ---------------------------------------------------------------------------
@@ -42,104 +75,57 @@ resource "azurerm_api_management_named_value" "jwt_signing_key" {
   resource_group_name = data.azurerm_resource_group.main.name
   api_management_name = azurerm_api_management.main.name
   display_name        = "jwt-signing-key"
-  value               = base64encode(data.azurerm_key_vault_secret.jwt_secret.value)
+  value               = base64encode(local.segredo["JwtSecretKey"])
   secret              = true
 }
 
 # ---------------------------------------------------------------------------
-# API da aplicação — backend é o LoadBalancer do AKS
+# Uma API por microsserviço — backend é o Service público de cada um no AKS
 # ---------------------------------------------------------------------------
 
-resource "azurerm_api_management_api" "app" {
-  name                = "postechallenge-api"
+resource "azurerm_api_management_api" "servico" {
+  for_each = local.apis
+
+  name                = "postech-${each.key}"
   resource_group_name = data.azurerm_resource_group.main.name
   api_management_name = azurerm_api_management.main.name
   revision            = "1"
-  display_name        = "PosTechChallenge — Oficina Mecânica API"
+  display_name        = "PosTech — ${each.value.nome}"
   protocols           = ["https"]
+  path                = each.key
 
-  # A autenticação é por JWT (emitido pela Auth Function ou pelo login de
-  # funcionário), não por chave de subscription do APIM. Com o padrão true,
-  # toda chamada exigiria também um Ocp-Apim-Subscription-Key.
+  # A autenticação é por JWT, não por chave de subscription do APIM.
   subscription_required = false
 
-  # path vazio deixa as rotas como https://<gateway>/api/v1/... , iguais às do spec.
-  path = ""
-
-  service_url = "http://${kubernetes_service.app.status[0].load_balancer[0].ingress[0].ip}"
-
-  import {
-    content_format = "openapi+json"
-    content_value  = file("${path.module}/openapi/postechallenge.json")
-  }
+  service_url = "http://${kubernetes_service.publico[each.key].status[0].load_balancer[0].ingress[0].ip}"
 }
 
-# A política já existe no APIM: foi aplicada à mão durante a depuração da
-# sintaxe, então o create falhava com "already exists - to be managed via
-# Terraform this resource needs to be imported into the State". O import a traz
-# para o state; uma vez importada, o bloco vira no-op.
-#
-# O ID é montado à mão em vez de reaproveitar azurerm_api_management_api.app.id
-# porque aquele atributo carrega o sufixo `;rev=1`, que não faz parte do ID que
-# o provider usa para a política.
-import {
-  to = azurerm_api_management_api_policy.app
-  id = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/${var.resource_group_name}/providers/Microsoft.ApiManagement/service/${var.apim_name}/apis/${azurerm_api_management_api.app.name}"
+resource "azurerm_api_management_api_operation" "curinga" {
+  for_each = local.operacoes
+
+  operation_id        = each.key
+  api_name            = azurerm_api_management_api.servico[each.value.api].name
+  api_management_name = azurerm_api_management.main.name
+  resource_group_name = data.azurerm_resource_group.main.name
+  display_name        = "${each.value.metodo} /*"
+  method              = each.value.metodo
+  url_template        = "/*"
 }
 
-resource "azurerm_api_management_api_policy" "app" {
-  api_name            = azurerm_api_management_api.app.name
+resource "azurerm_api_management_api_policy" "servico" {
+  for_each = local.apis
+
+  api_name            = azurerm_api_management_api.servico[each.key].name
   resource_group_name = data.azurerm_resource_group.main.name
   api_management_name = azurerm_api_management.main.name
 
-  xml_content = file("${path.module}/policies/app-api.xml")
+  xml_content = templatefile("${path.module}/policies/servico-api.xml.tftpl", {
+    publicas = each.value.publicas
+    prefixo  = each.key
+    limitar  = !local.apim_consumption
+  })
 
   depends_on = [azurerm_api_management_named_value.jwt_signing_key]
-}
-
-# O OpenAPI importado é o da Fase 2 e não contém os endpoints de health, que
-# foram adicionados agora. Declarados aqui para o synthetics do Datadog e o
-# smoke test da pipeline conseguirem chamá-los através do gateway.
-#
-# Já existem no APIM (criados durante a depuração), por isso o import.
-import {
-  to = azurerm_api_management_api_operation.health
-  id = "${azurerm_api_management_api.app.id}/operations/health"
-}
-
-resource "azurerm_api_management_api_operation" "health" {
-  operation_id        = "health"
-  api_name            = azurerm_api_management_api.app.name
-  api_management_name = azurerm_api_management.main.name
-  resource_group_name = data.azurerm_resource_group.main.name
-  display_name        = "Health check (liveness)"
-  method              = "GET"
-  url_template        = "/health"
-
-  response {
-    status_code = 200
-    description = "Saudavel"
-  }
-}
-
-import {
-  to = azurerm_api_management_api_operation.health_ready
-  id = "${azurerm_api_management_api.app.id}/operations/health-ready"
-}
-
-resource "azurerm_api_management_api_operation" "health_ready" {
-  operation_id        = "health-ready"
-  api_name            = azurerm_api_management_api.app.name
-  api_management_name = azurerm_api_management.main.name
-  resource_group_name = data.azurerm_resource_group.main.name
-  display_name        = "Health check (readiness)"
-  method              = "GET"
-  url_template        = "/health/ready"
-
-  response {
-    status_code = 200
-    description = "Saudavel"
-  }
 }
 
 # ---------------------------------------------------------------------------
@@ -214,7 +200,9 @@ resource "azurerm_api_management_api_policy" "auth" {
   resource_group_name = data.azurerm_resource_group.main.name
   api_management_name = azurerm_api_management.main.name
 
-  xml_content = file("${path.module}/policies/auth-api.xml")
+  xml_content = templatefile("${path.module}/policies/auth-api.xml.tftpl", {
+    limitar = !local.apim_consumption
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -231,7 +219,12 @@ resource "azurerm_log_analytics_workspace" "main" {
   tags = var.tags
 }
 
+# O Consumption não exporta logs de recurso para o Azure Monitor: no tier
+# Consumption este diagnóstico não existe, e o tráfego do gateway só aparece
+# no Datadog pelos traces dos serviços.
 resource "azurerm_monitor_diagnostic_setting" "apim" {
+  count = local.apim_consumption ? 0 : 1
+
   name                       = "apim-para-datadog"
   target_resource_id         = azurerm_api_management.main.id
   log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id

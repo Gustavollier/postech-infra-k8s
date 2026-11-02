@@ -1,32 +1,26 @@
 <!--
-  Política da API da aplicação.
+  Política de cada microsserviço no APIM (os, billing, execucao, identidade).
+  Gerada a partir deste template, com o que muda de um serviço para o outro:
 
-  Regra: TODA rota exige JWT válido, exceto duas que não podem exigir:
-    - POST /api/v1/Autenticacao/login  (login do funcionário — quem chama ainda não tem token)
-    - /health                          (probe do Datadog synthetics e do AKS)
+    - as rotas públicas, que não exigem token. Cada serviço tem as suas:
+      /health em todos (probe do Datadog synthetics); o login e a troca de
+      senha no Identidade (quem chama ainda não tem token); o webhook no
+      Billing (quem chama é o Mercado Pago).
+    - o prefixo do contador de rate limit, para cada API ter o seu balde.
 
-  Isso inclui, de propósito, as rotas que na Fase 2 eram [AllowAnonymous]
-  (consulta pública de status de OS e resposta de orçamento). Na Fase 3 elas
-  passam a exigir o token de cliente emitido pela Auth Function a partir do CPF.
-
-  O mesmo validate-jwt aceita tanto o token de funcionário (emitido pela API)
-  quanto o de cliente (emitido pela Function): ambos são assinados com o mesmo
-  segredo HMAC e carregam o mesmo issuer/audience.
+  O validate-jwt aceita o token de funcionário (emitido pelo Identidade) e o de
+  cliente (emitido pela Auth Function): os dois são assinados com o mesmo
+  segredo HMAC e carregam o mesmo issuer e audience.
 
   NOTA DE SINTAXE: expressões C# dentro de atributos XML precisam de &quot;
-  para as aspas internas. Usar aspas duplas cruas encerra o atributo e o APIM
-  rejeita a política com "is an unexpected token. Expecting white space."
+  para as aspas internas.
 -->
 <policies>
   <inbound>
     <base />
-
-    <!-- O <cors> vem ANTES do rate limit de proposito.
-         Ele e quem responde ao preflight e encerra o pipeline ali. Com o rate
-         limit na frente, cada chamada do navegador custava DUAS: o OPTIONS do
-         preflight e o metodo de verdade. Como o painel manda X-Correlation-ID
-         e Content-Type: application/json, todo POST gera preflight — o limite
-         valia pela metade sem ninguem ver. -->
+    <!-- O <cors> vem ANTES do rate limit de proposito: ele responde ao
+         preflight e encerra o pipeline ali. Com o rate limit na frente, cada
+         chamada do navegador custaria duas. -->
     <cors allow-credentials="false">
       <allowed-origins>
         <origin>*</origin>
@@ -43,27 +37,24 @@
         <header>*</header>
       </allowed-headers>
     </cors>
-
-    <!-- Correlação: reaproveita o ID recebido ou gera um novo, e propaga para o backend. -->
+    <!-- Correlação: reaproveita o ID recebido ou gera um novo, e propaga para
+         o backend. É ele que amarra os logs dos quatro serviços e os eventos
+         da saga num rastro só. -->
     <set-variable name="correlationId" value="@(context.Request.Headers.GetValueOrDefault(&quot;X-Correlation-ID&quot;, Guid.NewGuid().ToString()))" />
     <set-header name="X-Correlation-ID" exists-action="override">
       <value>@(context.Variables.GetValueOrDefault&lt;string&gt;("correlationId", ""))</value>
     </set-header>
-
     <choose>
-      <!-- Rotas públicas seguem sem validação de token. A condição é negada
-           aqui para que o bloco protegido fique no <when>, evitando um <when>
-           vazio, que o APIM tambem rejeita. -->
-      <when condition="@(!context.Request.Url.Path.ToLower().Contains(&quot;/autenticacao/login&quot;) &amp;&amp; !context.Request.Url.Path.ToLower().Contains(&quot;/health&quot;))">
+      <!-- A condição é negada para o bloco protegido ficar no <when>: um
+           <when> vazio o APIM rejeita. -->
+      <when condition="@(${join(" &amp;&amp; ", [for rota in publicas : "!context.Request.Url.Path.ToLower().Contains(&quot;${rota}&quot;)"])})">
         <validate-jwt header-name="Authorization"
                       failed-validation-httpcode="401"
                       failed-validation-error-message="Token inválido ou ausente."
                       require-expiration-time="true"
                       require-signed-tokens="true">
-          <!-- A ordem dos filhos é fixa no schema do APIM:
-               issuer-signing-keys, decryption-keys, audiences, issuers,
-               required-claims. Inverter audiences e issuers faz o APIM
-               rejeitar com "invalid child element". -->
+          <!-- A ordem dos filhos é fixa no schema do APIM: issuer-signing-keys,
+               decryption-keys, audiences, issuers, required-claims. -->
           <issuer-signing-keys>
             <key>{{jwt-signing-key}}</key>
           </issuer-signing-keys>
@@ -76,19 +67,19 @@
         </validate-jwt>
       </when>
     </choose>
-    <!-- Protecao contra abuso, por IP de origem. O contador leva o nome da API
-         no prefixo para nao dividir balde com a politica de autenticacao. -->
+%{ if limitar ~}
+    <!-- Proteção contra abuso, por IP de origem, com um balde por API.
+         Só fora do tier Consumption, que não tem rate-limit-by-key. -->
     <rate-limit-by-key calls="120"
                        renewal-period="60"
-                       counter-key="@(&quot;app-&quot; + context.Request.IpAddress)"
+                       counter-key="@(&quot;${prefixo}-&quot; + context.Request.IpAddress)"
                        remaining-calls-header-name="X-RateLimit-Remaining"
                        retry-after-header-name="Retry-After" />
+%{ endif ~}
   </inbound>
-
   <backend>
     <base />
   </backend>
-
   <outbound>
     <base />
     <!-- Devolve o ID de correlação para o cliente conseguir citá-lo num suporte. -->
@@ -96,7 +87,6 @@
       <value>@(context.Variables.GetValueOrDefault&lt;string&gt;("correlationId", ""))</value>
     </set-header>
   </outbound>
-
   <on-error>
     <base />
     <set-header name="X-Correlation-ID" exists-action="override">

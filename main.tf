@@ -7,14 +7,64 @@ data "azurerm_key_vault" "main" {
   resource_group_name = data.azurerm_resource_group.main.name
 }
 
-data "azurerm_key_vault_secret" "sql_connection_string" {
-  name         = "SqlConnectionString"
+# Os segredos que os serviços consomem, todos lidos do Key Vault.
+#
+# Dois são escritos pelo postech-infra-db (as connection strings SQL e o JWT).
+# Os outros são de serviços de fora da Azure — Atlas, CloudAMQP, Mercado Pago —
+# e são gravados à mão no cofre, uma vez, por quem tem as contas: o valor nunca
+# passa por variável, arquivo ou pipeline. Ver README, "Antes do apply".
+data "azurerm_key_vault_secret" "segredo" {
+  for_each = toset([
+    "JwtSecretKey",
+    "os-sql-connection-string",
+    "identidade-sql-connection-string",
+    "billing-mongo-connection-string",
+    "execucao-mongo-connection-string",
+    "rabbitmq-connection-string",
+    "mercadopago-access-token",
+  ])
+
+  name         = each.value
   key_vault_id = data.azurerm_key_vault.main.id
 }
 
-data "azurerm_key_vault_secret" "jwt_secret" {
-  name         = "JwtSecretKey"
-  key_vault_id = data.azurerm_key_vault.main.id
+locals {
+  segredo = { for nome, s in data.azurerm_key_vault_secret.segredo : nome => s.value }
+
+  # Os quatro microsserviços. Para cada um: o Secret que o manifesto dele
+  # espera (nome e chaves batem com o k8s/deployment.yaml do repositório do
+  # serviço) e o rótulo app que o Service público seleciona.
+  servicos = {
+    os = {
+      app = "os-api"
+      segredos = {
+        "sql-connection-string"      = local.segredo["os-sql-connection-string"]
+        "rabbitmq-connection-string" = local.segredo["rabbitmq-connection-string"]
+      }
+    }
+    billing = {
+      app = "billing-api"
+      segredos = {
+        "mongo-connection-string"    = local.segredo["billing-mongo-connection-string"]
+        "rabbitmq-connection-string" = local.segredo["rabbitmq-connection-string"]
+        "mercadopago-access-token"   = local.segredo["mercadopago-access-token"]
+      }
+    }
+    execucao = {
+      app = "execucao-api"
+      segredos = {
+        "mongo-connection-string"    = local.segredo["execucao-mongo-connection-string"]
+        "rabbitmq-connection-string" = local.segredo["rabbitmq-connection-string"]
+      }
+    }
+    identidade = {
+      app = "identidade-api"
+      segredos = {
+        "sql-connection-string" = local.segredo["identidade-sql-connection-string"]
+        "jwt-secret-key"        = local.segredo["JwtSecretKey"]
+      }
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -99,36 +149,38 @@ resource "kubernetes_namespace" "app" {
   }
 }
 
-resource "kubernetes_secret" "app" {
+resource "kubernetes_secret" "servico" {
+  for_each = local.servicos
+
   metadata {
-    name      = "postechallenge-secrets"
+    name      = "${each.key}-service-secrets"
     namespace = kubernetes_namespace.app.metadata[0].name
   }
 
-  data = {
-    "ConnectionStrings__DefaultConnection" = data.azurerm_key_vault_secret.sql_connection_string.value
-    "Jwt__SecretKey"                       = data.azurerm_key_vault_secret.jwt_secret.value
-  }
-
+  data = each.value.segredos
   type = "Opaque"
 }
 
-# O Service é o ponto de entrada do cluster, então mora no repo de infra: o APIM
-# precisa do IP dele como backend, e ele tem que existir antes do app subir.
-# O Deployment e o HPA ficam no repo da aplicação.
+# Um Service público por microsserviço, e o APIM roteia por caminho para o IP
+# de cada um. O repositório de cada serviço tem o seu Service ClusterIP; este
+# aqui é a porta de entrada, e mora na infra porque o APIM precisa do IP antes
+# de o serviço subir.
 #
-# Optamos por LoadBalancer em vez de ingress-nginx + cert-manager: o APIM já
-# termina o TLS e é o único cliente deste IP, então a camada extra de ingress
-# só adicionaria superfície e tempo de setup. Registrado no ADR-0003.
-resource "kubernetes_service" "app" {
+# LoadBalancer por serviço, e não um ingress controller com um IP só, pela
+# mesma razão do ADR-0003: o APIM termina o TLS e é o único cliente destes IPs,
+# e a camada de ingress só somaria superfície e tempo de setup. Quatro IPs
+# públicos custam centavos por dia.
+resource "kubernetes_service" "publico" {
+  for_each = local.servicos
+
   metadata {
-    name      = "postechallenge-api"
+    name      = "${each.value.app}-publico"
     namespace = kubernetes_namespace.app.metadata[0].name
   }
 
   spec {
     selector = {
-      app = "postechallenge-api"
+      app = each.value.app
     }
 
     port {
@@ -141,7 +193,6 @@ resource "kubernetes_service" "app" {
     type = "LoadBalancer"
   }
 
-  # O IP é atribuído pelo Azure assim que o Service é criado, mesmo sem pods
-  # por trás. O APIM usa esse IP como backend.
+  # O IP é atribuído assim que o Service é criado, mesmo sem pods por trás.
   wait_for_load_balancer = true
 }

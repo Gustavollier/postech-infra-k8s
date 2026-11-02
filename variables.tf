@@ -83,31 +83,47 @@ variable "acr_name" {
 }
 
 # ---------------------------------------------------------------------------
-# APIM (recurso já existente, importado)
+# APIM
 # ---------------------------------------------------------------------------
 
 variable "apim_name" {
-  description = "Nome do APIM já provisionado."
+  description = "Nome do APIM. Único globalmente."
   type        = string
   default     = "pos-tech-fiap-apim"
 }
 
 variable "apim_publisher_name" {
-  description = "Publisher do APIM. Precisa bater com o recurso existente para o import não gerar diff."
+  description = "Publisher do APIM."
   type        = string
   default     = "pos-tech-fiap"
 }
 
 variable "apim_publisher_email" {
-  description = "E-mail do publisher do APIM existente."
+  description = "E-mail do publisher do APIM."
   type        = string
   default     = "gustavo.olier27@gmail.com"
 }
 
 variable "apim_sku" {
-  description = "SKU do APIM existente."
+  description = <<-EOT
+    SKU do APIM.
+
+    Developer_1: ~US$ 50/mês cobrado por hora (~US$ 1,70/dia), leva 30 a 45
+    minutos para subir. Tem tudo que a Fase 3 entregou: rate limit por IP na
+    autenticação (barra enumeração de CPF) e logs do gateway no Azure Monitor,
+    que o Datadog consome.
+
+    Consumption_0: cobrado por chamada (1 milhão grátis por mês), sobe em
+    minutos. Não tem rate-limit-by-key nem logs de recurso; as políticas e o
+    diagnóstico se ajustam sozinhos (ver apim.tf).
+  EOT
   type        = string
   default     = "Developer_1"
+
+  validation {
+    condition     = contains(["Developer_1", "Consumption_0"], var.apim_sku)
+    error_message = "Use Developer_1 ou Consumption_0."
+  }
 }
 
 variable "function_app_name" {
@@ -200,7 +216,7 @@ variable "tags" {
   type        = map(string)
   default = {
     projeto = "postech-13soat"
-    fase    = "3"
+    fase    = "4"
     owner   = "terraform"
   }
 }

@@ -113,12 +113,12 @@ resource "azurerm_container_app" "auth" {
 
   secret {
     name  = "sql-connection-string"
-    value = data.azurerm_key_vault_secret.sql_connection_string.value
+    value = local.segredo["identidade-sql-connection-string"]
   }
 
   secret {
     name  = "jwt-secret-key"
-    value = data.azurerm_key_vault_secret.jwt_secret.value
+    value = local.segredo["JwtSecretKey"]
   }
 
   secret {
