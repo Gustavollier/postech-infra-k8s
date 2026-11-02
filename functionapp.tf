@@ -17,10 +17,9 @@
 # O container roda a imagem base oficial do Azure Functions: mesmo host, mesmos
 # triggers e bindings, mesmo código. Muda apenas o plano de hospedagem.
 #
-# REGIÃO: Container Apps permite 1 ambiente por região por subscription, e o
-# forwarder de logs do Datadog já ocupou East US. O ambiente vai para centralus,
-# que por acaso é onde o Azure SQL está — a Function fica colocalizada com o
-# banco que ela consulta.
+# REGIÃO: Container Apps permite 1 ambiente por região por subscription. Ver
+# var.container_app_location: na Fase 4 tudo fica em canadacentral, junto do
+# Azure SQL que a Function consulta.
 # ---------------------------------------------------------------------------
 
 # Storage que o host de Functions usa para estado interno.
