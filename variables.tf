@@ -46,13 +46,22 @@ variable "node_vm_size" {
     para cluster autoscaler. A escalabilidade fica por conta do HPA sobre os
     pods.
 
-    Standard_D2as_v4 = 2 vCPU, 8 GB, sem burst — o mesmo perfil do D2as_v7.
-    A família Bsv2 (burstable) tem 10 vCPU de quota aqui e seria a alternativa
-    mais barata, mas crédito de CPU esgotado sob carga do HPA atrapalharia a
-    demonstração de escala.
+    O cluster roda em Standard_B2ps_v2: 2 vCPU, 8 GB, ARM64 (Ampere), da
+    família Bpsv2. Foi a que a assinatura deixou criar no dia — a Dasv4,
+    primeira escolha, esbarrou na quota ao subir junto com o resto. É também a
+    mais barata das opções.
+
+    Duas consequências que não são óbvias:
+      - as imagens dos serviços precisam ser linux/arm64. As pipelines dos
+        quatro serviços já publicam assim; imagem amd64 aqui fica em
+        "exec format error".
+      - é burstable: sob carga contínua o crédito de CPU acaba. Para a carga
+        desta entrega não chega perto.
+
+    Trocar este valor recria o node pool — não mude num ambiente em uso.
   EOT
   type        = string
-  default     = "Standard_D2as_v4"
+  default     = "Standard_B2ps_v2"
 }
 
 variable "node_count" {

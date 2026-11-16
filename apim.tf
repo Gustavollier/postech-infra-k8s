@@ -97,7 +97,9 @@ resource "azurerm_api_management_api" "servico" {
   # A autenticação é por JWT, não por chave de subscription do APIM.
   subscription_required = false
 
-  service_url = "http://${kubernetes_service.publico[each.key].status[0].load_balancer[0].ingress[0].ip}"
+  # Todas apontam para o mesmo IP, o do ingress controller; o prefixo do
+  # serviço vai no caminho e é o ingress que o retira.
+  service_url = "http://${data.kubernetes_service.ingress.status[0].load_balancer[0].ingress[0].ip}/${each.key}"
 }
 
 resource "azurerm_api_management_api_operation" "curinga" {

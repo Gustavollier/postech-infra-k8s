@@ -161,15 +161,21 @@ resource "kubernetes_secret" "servico" {
   type = "Opaque"
 }
 
-# Um Service público por microsserviço, e o APIM roteia por caminho para o IP
-# de cada um. O repositório de cada serviço tem o seu Service ClusterIP; este
-# aqui é a porta de entrada, e mora na infra porque o APIM precisa do IP antes
-# de o serviço subir.
+# ---------------------------------------------------------------------------
+# Entrada do cluster: um ingress controller, um IP público só
+# ---------------------------------------------------------------------------
 #
-# LoadBalancer por serviço, e não um ingress controller com um IP só, pela
-# mesma razão do ADR-0003: o APIM termina o TLS e é o único cliente destes IPs,
-# e a camada de ingress só somaria superfície e tempo de setup. Quatro IPs
-# públicos custam centavos por dia.
+# A primeira versão tinha um LoadBalancer por serviço — quatro IPs públicos. A
+# assinatura de estudante não deixou: o limite de IPs públicos por região não
+# comporta os quatro mais o de saída do cluster. Com o ingress controller é um
+# IP só, e o APIM roteia por caminho (/os, /billing, ...) para ele.
+#
+# O APIM continua sendo a única porta pública: termina o TLS, valida o JWT e
+# aplica o rate limit. O ingress só distribui o que o gateway já deixou passar.
+
+# O alvo de cada regra do ingress. ClusterIP: quem tem IP público é o
+# controller, não o serviço. Mora na infra, e não no repositório do serviço,
+# porque a regra do ingress precisa existir antes do primeiro deploy.
 resource "kubernetes_service" "publico" {
   for_each = local.servicos
 
@@ -190,9 +196,119 @@ resource "kubernetes_service" "publico" {
       protocol    = "TCP"
     }
 
-    type = "LoadBalancer"
+    type = "ClusterIP"
+  }
+}
+
+resource "helm_release" "ingress_nginx" {
+  name             = "ingress-nginx"
+  repository       = "https://kubernetes.github.io/ingress-nginx"
+  chart            = "ingress-nginx"
+  version          = "4.11.3"
+  namespace        = "ingress-nginx"
+  create_namespace = true
+  timeout          = 600
+
+  set {
+    name  = "controller.replicaCount"
+    value = "1"
   }
 
-  # O IP é atribuído assim que o Service é criado, mesmo sem pods por trás.
-  wait_for_load_balancer = true
+  # O webhook de admissão valida os Ingress na criação. Num cluster que sobe do
+  # zero ele ainda não está pronto quando o Terraform cria as regras, e o apply
+  # falha. Aqui as regras são quatro e vêm deste arquivo; a validação não paga
+  # a corrida.
+  set {
+    name  = "controller.admissionWebhooks.enabled"
+    value = "false"
+  }
+
+  set {
+    name  = "controller.service.type"
+    value = "LoadBalancer"
+  }
+
+  # Sonda de saúde do load balancer por TCP, nas duas portas.
+  #
+  # O padrão da Azure para uma porta HTTP é sondar com GET, e a receita comum é
+  # apontar a sonda para /healthz. Aqui ela recebia 404: as regras deste
+  # ingress não têm host, tomam o servidor padrão do nginx, e /healthz deixa de
+  # responder. A Azure então marcava os dois nós como fora do ar e descartava
+  # todo o tráfego — o APIM dava timeout em todas as rotas, com os pods
+  # saudáveis. Por TCP a sonda só pergunta se a porta está aberta, que é o que
+  # se quer saber do controller.
+  set {
+    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/port_80_health-probe_protocol"
+    value = "Tcp"
+  }
+
+  set {
+    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/port_443_health-probe_protocol"
+    value = "Tcp"
+  }
+
+  # Só o APIM alcança o cluster.
+  #
+  # Sem isto o IP do ingress respondia direto da internet, por HTTP e sem
+  # token: quem o descobrisse pulava o gateway inteiro — validação do JWT e
+  # rate limit. Os serviços decidem autorização a partir de um token que o
+  # gateway já autenticou, então esta restrição não é enfeite: é o que
+  # sustenta essa confiança. A Azure a traduz numa regra do NSG.
+  set {
+    name  = "controller.service.loadBalancerSourceRanges[0]"
+    value = "${azurerm_api_management.main.public_ip_addresses[0]}/32"
+  }
+
+  depends_on = [azurerm_kubernetes_cluster.main]
+}
+
+# O IP do controller, que é o backend de todas as APIs de serviço no APIM.
+data "kubernetes_service" "ingress" {
+  metadata {
+    name      = "ingress-nginx-controller"
+    namespace = helm_release.ingress_nginx.namespace
+  }
+
+  depends_on = [helm_release.ingress_nginx]
+}
+
+# Uma regra por serviço. O APIM chama http://<ip>/<servico>/api/v1/...; o
+# ingress casa o prefixo e entrega ao serviço só o que vem depois dele, que é
+# o caminho que a aplicação conhece.
+resource "kubernetes_ingress_v1" "servico" {
+  for_each = local.servicos
+
+  metadata {
+    name      = each.value.app
+    namespace = kubernetes_namespace.app.metadata[0].name
+
+    annotations = {
+      "nginx.ingress.kubernetes.io/rewrite-target" = "/$2"
+    }
+  }
+
+  spec {
+    ingress_class_name = "nginx"
+
+    rule {
+      http {
+        path {
+          path      = "/${each.key}(/|$)(.*)"
+          path_type = "ImplementationSpecific"
+
+          backend {
+            service {
+              name = kubernetes_service.publico[each.key].metadata[0].name
+
+              port {
+                number = 80
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [helm_release.ingress_nginx]
 }
