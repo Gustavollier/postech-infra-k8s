@@ -4,11 +4,61 @@ Terraform da plataforma do Tech Challenge Fase 3: o cluster onde a aplicação r
 
 É o item 4 dos quatro repositórios da entrega. Os outros três entregam o código; este entrega o lugar onde eles rodam.
 
+## Fase 4: quatro microsserviços
+
+O monólito sai e entram o OS, o Billing, o Execução e o Identidade. O que muda
+aqui:
+
+| Antes (Fase 3) | Agora (Fase 4) |
+| --- | --- |
+| Uma API no APIM, com o OpenAPI do monólito | Uma API por serviço (`/os`, `/billing`, `/execucao`, `/identidade`) e a `/auth` da Function |
+| Um Service `LoadBalancer` | Um ingress controller (ingress-nginx) com um IP público só; o APIM roteia por caminho e o ingress entrega a cada serviço. O IP só aceita conexão vinda do APIM |
+| Um Secret com a connection string do monólito | Um Secret por serviço, com os nomes e as chaves que o manifesto de cada um espera |
+| APIM importado do portal, com `prevent_destroy` | APIM criado pelo Terraform, e o `destroy` funciona |
+| `eastus` / `centralus` | `canadacentral`, por política da assinatura |
+
+As rotas ficam `https://<apim>.azure-api.net/<serviço>/api/v1/...`. Toda rota
+exige JWT, exceto `/health` de cada serviço, o login e a troca de senha do
+Identidade e o webhook do Mercado Pago no Billing.
+
+### O tier do APIM
+
+`var.apim_sku` escolhe entre `Developer_1` e `Consumption_0`:
+
+| | Developer_1 | Consumption_0 |
+| --- | --- | --- |
+| Custo | ~US$ 1,70/dia, cobrado por hora | por chamada, 1 milhão grátis/mês |
+| Tempo para subir | 30 a 45 min | minutos |
+| Rate limit por IP (barra enumeração de CPF) | sim | **não existe** (`rate-limit-by-key`) |
+| Logs do gateway no Azure Monitor (Datadog) | sim | **não existe** |
+
+As políticas e o diagnóstico se ajustam ao tier sozinhos. Referência:
+[políticas por tier](https://learn.microsoft.com/azure/api-management/api-management-policies#rate-limiting-and-quotas)
+e [logs de recurso](https://learn.microsoft.com/azure/api-management/api-management-howto-use-azure-monitor#resource-logs).
+
+### Antes do apply
+
+A ordem importa, porque este repositório **lê** segredos que precisam existir:
+
+1. **`postech-infra-db`**: cria o SQL, os bancos `os-db` e `identidade-db` e o
+   Key Vault, com as connection strings SQL e o segredo do JWT.
+2. **Segredos de fora da Azure, à mão, uma vez.** Quem tem as contas grava no
+   cofre, sem o valor passar por arquivo, variável ou pipeline:
+
+   | Segredo no Key Vault | De onde vem |
+   | --- | --- |
+   | `billing-mongo-connection-string` | Atlas, usuário `billing-svc` |
+   | `execucao-mongo-connection-string` | Atlas, usuário `execucao-svc` |
+   | `rabbitmq-connection-string` | CloudAMQP, AMQP URL |
+   | `mercadopago-access-token` | Mercado Pago, credencial de teste |
+
+3. **Este repositório.**
+
 ## O que este repositório provisiona
 
 | Arquivo | Recursos |
 |---|---|
-| `main.tf` | ACR, AKS, namespace, Secret e Service `LoadBalancer` da aplicação |
+| `main.tf` | ACR, AKS, namespace, Secrets, ingress controller e as regras de ingress dos serviços |
 | `apim.tf` | API Management (importado), named value do JWT, APIs e políticas, Log Analytics, diagnostic setting |
 | `functionapp.tf` | Identidade gerenciada, storage, ambiente e Container App da Auth Function |
 | `datadog.tf` | Agente no cluster (Helm), dashboard, monitors e synthetics |
@@ -51,7 +101,9 @@ Três restrições desta subscription moldaram a arquitetura. Estão documentada
 
 **A Auth Function roda em Container Apps, não em Function App.** A subscription tem quota **zero** para todos os planos de App Service testados — Y1, F1, B1, S1, P0v3, P1v3. Sem plano não existe Function App hospedado. Container Apps é serverless de verdade (escala a zero, cobra por requisição) e é destino oficial para Azure Functions: o container roda a imagem base oficial do Functions, com o mesmo host, os mesmos triggers e o mesmo código. Muda apenas o plano de hospedagem.
 
-**O cluster tem 2 nós fixos, sem autoscaler.** A quota regional é de 4 vCPU, e 2 nós de 2 vCPU já são o teto. A escalabilidade exigida pelo enunciado vem do HPA sobre os pods (2 a 5 réplicas), não de nós novos. A família B (burstable) é proibida nesta subscription em `eastus`, então o SKU é `Standard_D2as_v7`.
+**O cluster tem 2 nós fixos, sem autoscaler.** A escalabilidade exigida pelo enunciado vem do HPA sobre os pods, não de nós novos. Na Fase 4, em `canadacentral`, os nós são `Standard_B2ps_v2` (ARM64): foi a família que a assinatura deixou criar, e por isso as imagens dos serviços são publicadas em `linux/arm64`.
+
+**Só o APIM alcança o cluster.** O Service do ingress controller tem `loadBalancerSourceRanges` com o IP do gateway, que a Azure traduz numa regra do NSG. Sem isso o IP do ingress respondia direto da internet, sem token. E a sonda de saúde do load balancer é TCP: por HTTP em `/healthz` ela recebia 404 e a Azure tirava os nós de rotação.
 
 **O ambiente de Container Apps fica em `centralus`.** A subscription permite um ambiente por região, e `eastus` estava ocupado. Efeito colateral bom: a Function fica colocalizada com o Azure SQL que ela consulta.
 

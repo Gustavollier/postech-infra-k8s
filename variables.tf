@@ -5,9 +5,17 @@ variable "resource_group_name" {
 }
 
 variable "location" {
-  description = "Região do Azure."
+  description = <<-EOT
+    Região do Azure.
+
+    Fase 4: a subscription passou a ter a política "Allowed resource deployment
+    regions", que só aceita brazilsouth, canadacentral, francecentral,
+    italynorth e belgiumcentral. eastus e centralus, usados na Fase 3, são
+    recusados. canadacentral foi escolhida por custo — mais barata que
+    brazilsouth — e tem AKS, APIM Consumption, Azure SQL e Container Apps.
+  EOT
   type        = string
-  default     = "eastus"
+  default     = "canadacentral"
 }
 
 # ---------------------------------------------------------------------------
@@ -30,24 +38,34 @@ variable "node_vm_size" {
   description = <<-EOT
     SKU das VMs do node pool.
 
-    Duas restrições da subscription determinam esta escolha:
+    A quota é por família e por região, então a escolha muda com a região.
 
-    1. Quota de apenas 4 vCPU regionais — 2 nós de 2 vCPU usam exatamente o teto,
-       sem folga para cluster autoscaler. A escalabilidade fica por conta do HPA
-       sobre os pods.
-    2. A família B (burstable) NÃO é permitida nesta subscription em eastus
-       ("The VM size of Standard_B2s is not allowed"). O menor SKU liberado é a
-       geração D v6/v7 de 2 vCPU.
+    Em canadacentral (az vm list-usage, 02/11/2026): 6 vCPU regionais, mas a
+    família Dasv7 — usada na Fase 3 em eastus — tem quota ZERO aqui. A Dasv4
+    tem 4 vCPU: 2 nós de 2 vCPU usam exatamente o teto da família, sem folga
+    para cluster autoscaler. A escalabilidade fica por conta do HPA sobre os
+    pods.
 
-    Standard_D2as_v7 = 2 vCPU, 8 GB. A família Dasv7 tem quota de 4 vCPU,
-    confirmada via az vm list-usage.
+    O cluster roda em Standard_B2ps_v2: 2 vCPU, 8 GB, ARM64 (Ampere), da
+    família Bpsv2. Foi a que a assinatura deixou criar no dia — a Dasv4,
+    primeira escolha, esbarrou na quota ao subir junto com o resto. É também a
+    mais barata das opções.
+
+    Duas consequências que não são óbvias:
+      - as imagens dos serviços precisam ser linux/arm64. As pipelines dos
+        quatro serviços já publicam assim; imagem amd64 aqui fica em
+        "exec format error".
+      - é burstable: sob carga contínua o crédito de CPU acaba. Para a carga
+        desta entrega não chega perto.
+
+    Trocar este valor recria o node pool — não mude num ambiente em uso.
   EOT
   type        = string
-  default     = "Standard_D2as_v7"
+  default     = "Standard_B2ps_v2"
 }
 
 variable "node_count" {
-  description = "Quantidade de nós. 2 x Standard_D2as_v7 = 4 vCPU = teto da quota."
+  description = "Quantidade de nós. 2 x Standard_D2as_v4 = 4 vCPU = teto da quota da família Dasv4."
   type        = number
   default     = 2
 
@@ -74,31 +92,47 @@ variable "acr_name" {
 }
 
 # ---------------------------------------------------------------------------
-# APIM (recurso já existente, importado)
+# APIM
 # ---------------------------------------------------------------------------
 
 variable "apim_name" {
-  description = "Nome do APIM já provisionado."
+  description = "Nome do APIM. Único globalmente."
   type        = string
   default     = "pos-tech-fiap-apim"
 }
 
 variable "apim_publisher_name" {
-  description = "Publisher do APIM. Precisa bater com o recurso existente para o import não gerar diff."
+  description = "Publisher do APIM."
   type        = string
   default     = "pos-tech-fiap"
 }
 
 variable "apim_publisher_email" {
-  description = "E-mail do publisher do APIM existente."
+  description = "E-mail do publisher do APIM."
   type        = string
   default     = "gustavo.olier27@gmail.com"
 }
 
 variable "apim_sku" {
-  description = "SKU do APIM existente."
+  description = <<-EOT
+    SKU do APIM.
+
+    Developer_1: ~US$ 50/mês cobrado por hora (~US$ 1,70/dia), leva 30 a 45
+    minutos para subir. Tem tudo que a Fase 3 entregou: rate limit por IP na
+    autenticação (barra enumeração de CPF) e logs do gateway no Azure Monitor,
+    que o Datadog consome.
+
+    Consumption_0: cobrado por chamada (1 milhão grátis por mês), sobe em
+    minutos. Não tem rate-limit-by-key nem logs de recurso; as políticas e o
+    diagnóstico se ajustam sozinhos (ver apim.tf).
+  EOT
   type        = string
   default     = "Developer_1"
+
+  validation {
+    condition     = contains(["Developer_1", "Consumption_0"], var.apim_sku)
+    error_message = "Use Developer_1 ou Consumption_0."
+  }
 }
 
 variable "function_app_name" {
@@ -117,12 +151,14 @@ variable "container_app_location" {
   description = <<-EOT
     Região do ambiente de Container Apps.
 
-    Container Apps permite apenas 1 ambiente por região por subscription, e o
-    forwarder de logs do Datadog já ocupou eastus. centralus resolve e ainda
-    coloca a Function na mesma região do Azure SQL que ela consulta.
+    Container Apps permite apenas 1 ambiente por região por subscription. Na
+    Fase 3 o forwarder de logs do Datadog ocupava eastus e o ambiente foi para
+    centralus. Na Fase 4 a subscription foi recriada do zero e a política de
+    regiões permitidas recusa centralus: tudo fica em canadacentral, junto do
+    Azure SQL.
   EOT
   type        = string
-  default     = "centralus"
+  default     = "canadacentral"
 }
 
 variable "function_storage_name" {
@@ -189,7 +225,7 @@ variable "tags" {
   type        = map(string)
   default = {
     projeto = "postech-13soat"
-    fase    = "3"
+    fase    = "4"
     owner   = "terraform"
   }
 }

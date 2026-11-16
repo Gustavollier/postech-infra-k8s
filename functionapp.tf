@@ -17,10 +17,9 @@
 # O container roda a imagem base oficial do Azure Functions: mesmo host, mesmos
 # triggers e bindings, mesmo código. Muda apenas o plano de hospedagem.
 #
-# REGIÃO: Container Apps permite 1 ambiente por região por subscription, e o
-# forwarder de logs do Datadog já ocupou East US. O ambiente vai para centralus,
-# que por acaso é onde o Azure SQL está — a Function fica colocalizada com o
-# banco que ela consulta.
+# REGIÃO: Container Apps permite 1 ambiente por região por subscription. Ver
+# var.container_app_location: na Fase 4 tudo fica em canadacentral, junto do
+# Azure SQL que a Function consulta.
 # ---------------------------------------------------------------------------
 
 # Storage que o host de Functions usa para estado interno.
@@ -74,10 +73,26 @@ resource "time_sleep" "propagacao_acr_pull" {
   create_duration = "60s"
 }
 
+# O ambiente e o app existem na Azure mas ficaram fora do state: a criação deu
+# timeout no cliente e o recurso terminou de subir sozinho. Sem estes imports o
+# apply seguinte tenta criar os dois de novo e para em "already exists".
+# Depois de um apply bem-sucedido os blocos viram no-op e podem sair.
+import {
+  to = azurerm_container_app_environment.main
+  id = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/${var.resource_group_name}/providers/Microsoft.App/managedEnvironments/${var.container_app_environment_name}"
+}
+
 resource "azurerm_container_app_environment" "main" {
   name                = var.container_app_environment_name
   resource_group_name = data.azurerm_resource_group.main.name
   location            = var.container_app_location
+
+  # O perfil que a Azure cria por padrão. Declarado para o Terraform não
+  # enxergar diferença com o que existe e tentar removê-lo.
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+  }
 
   tags = var.tags
 }
@@ -101,6 +116,7 @@ resource "azurerm_container_app" "auth" {
   resource_group_name          = data.azurerm_resource_group.main.name
   container_app_environment_id = azurerm_container_app_environment.main.id
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
 
   identity {
     type         = "UserAssigned"
@@ -114,12 +130,12 @@ resource "azurerm_container_app" "auth" {
 
   secret {
     name  = "sql-connection-string"
-    value = data.azurerm_key_vault_secret.sql_connection_string.value
+    value = local.segredo["identidade-sql-connection-string"]
   }
 
   secret {
     name  = "jwt-secret-key"
-    value = data.azurerm_key_vault_secret.jwt_secret.value
+    value = local.segredo["JwtSecretKey"]
   }
 
   secret {
@@ -137,6 +153,14 @@ resource "azurerm_container_app" "auth" {
     # enunciado pede, e o que mantém o custo perto de zero.
     min_replicas = 0
     max_replicas = 3
+
+    # A regra de escala que a Azure aplica quando nenhuma é declarada: uma
+    # réplica a cada 10 requisições simultâneas. Explícita pelo mesmo motivo do
+    # perfil de workload.
+    http_scale_rule {
+      name                = "http-scaler"
+      concurrent_requests = "10"
+    }
 
     container {
       name   = "auth-function"
@@ -239,6 +263,13 @@ resource "azurerm_container_app" "auth" {
     ignore_changes = [
       # A pipeline do repo da Function atualiza a tag da imagem a cada deploy.
       template[0].container[0].image,
+
+      # A API da Azure não devolve estes três campos como o provider os envia,
+      # e o plano mostrava a mesma "mudança" a cada execução, sem nada mudar de
+      # fato. Ignorá-los deixa o plano limpo, que é o que permite confiar nele.
+      ingress[0].traffic_weight,
+      template[0].cooldown_period_in_seconds,
+      template[0].polling_interval_in_seconds,
     ]
   }
 

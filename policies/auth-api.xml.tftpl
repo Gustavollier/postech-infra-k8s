@@ -52,16 +52,18 @@
       </when>
     </choose>
 
-    <!-- Bem mais restritivo que a API principal, que permite 120: 30 tentativas
-         por minuto por IP. O contador leva o nome da API no prefixo para nao
-         dividir balde com a outra politica, que usa o mesmo IP como chave.
-         30 ainda barra enumeracao de CPF, que e o ponto: varrer o espaco de
-         CPFs a 30 por minuto e inviavel, e o 429 aparece muito antes. -->
+%{ if limitar ~}
+    <!-- 30 tentativas por minuto por IP. O contador leva o nome da API no
+         prefixo para nao dividir balde com as outras politicas, que usam o
+         mesmo IP como chave. 30 ainda barra enumeracao de CPF, que e o ponto:
+         varrer o espaco de CPFs a 30 por minuto e inviavel.
+         So existe fora do tier Consumption, que nao tem rate-limit-by-key. -->
     <rate-limit-by-key calls="30"
                        renewal-period="60"
                        counter-key="@(&quot;auth-&quot; + context.Request.IpAddress)"
                        remaining-calls-header-name="X-RateLimit-Remaining"
                        retry-after-header-name="Retry-After" />
+%{ endif ~}
   </inbound>
 
   <backend>
